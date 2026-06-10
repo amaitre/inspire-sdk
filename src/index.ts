@@ -32,11 +32,33 @@ import os from 'node:os'
 
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt'
 
-import type { CommandMsg, HeartbeatMsg, LogLevel, LogMsg, PresenceMsg, StatusMsg, StatusState } from './types'
+import type {
+  CapabilityManifestMsg,
+  CommandMsg,
+  HeartbeatMsg,
+  LogLevel,
+  LogMsg,
+  PresenceMsg,
+  RpcHandler,
+  RpcRequestMsg,
+  RpcResponseMsg,
+  RpcTarget,
+  StatusMsg,
+  StatusState,
+  VerbSpec,
+} from './types'
 
 const DEFAULT_BROKER_HOST = '127.0.0.1'
 const DEFAULT_BROKER_PORT = 1883
 const DEFAULT_HEARTBEAT_MS = 10_000
+const DEFAULT_RPC_TIMEOUT_MS = 8_000
+
+let rpcCounter = 0
+/** Process-unique, time-free correlation id (Date.now-free for determinism in tests). */
+function newCorrId(): string {
+  rpcCounter += 1
+  return `${process.pid.toString(36)}-${rpcCounter.toString(36)}`
+}
 
 export interface InspireStartOptions {
   slug: string
@@ -62,7 +84,26 @@ export interface InspireClient {
   log(level: LogLevel, msg: string, fields?: Record<string, unknown>): Promise<void>
   /** Register a handler for an inbound CommandMsg verb. */
   onCommand(cmd: string, handler: (msg: CommandMsg) => void): void
-  /** Tear down: clear retained presence, stop heartbeat, disconnect. */
+  /**
+   * Register an RPC verb handler. The handler's return value (or resolved
+   * value) is sent back to the caller as the result; a throw becomes an
+   * error response. Registering adds the verb to the capability manifest and
+   * republishes it.
+   */
+  onCall(verb: string, handler: RpcHandler, spec?: Omit<VerbSpec, 'name'>): void
+  /**
+   * Invoke a verb on a (possibly remote, across-bridge) app instance and await
+   * the result. Rejects on timeout or on an error response from the target.
+   */
+  call(
+    target: RpcTarget,
+    verb: string,
+    args?: Record<string, unknown>,
+    opts?: { timeoutMs?: number },
+  ): Promise<unknown>
+  /** The app's current capability manifest (the verbs registered via onCall). */
+  readonly verbs: VerbSpec[]
+  /** Tear down: clear retained presence + manifest, stop heartbeat, disconnect. */
   stop(): Promise<void>
   /** Resolved node_id used in topics — useful for tests / diagnostics. */
   readonly nodeId: string
@@ -93,6 +134,20 @@ function topicLog(slug: string, nodeId: string): string {
 function topicCmd(slug: string, nodeId: string): string {
   return `inspire/cmd/${slug}/${nodeId}`
 }
+function topicManifest(slug: string, nodeId: string): string {
+  return `inspire/manifest/${slug}/${nodeId}`
+}
+/** Inbound RPC requests for this app instance. */
+function topicRpcCall(slug: string, nodeId: string): string {
+  return `inspire/rpc/${slug}/${nodeId}/call`
+}
+/** Reply channel keyed by the caller's reply_to id. Caller subscribes the `+` wildcard. */
+function topicRpcReply(replyTo: string, corrId: string): string {
+  return `inspire/rpc/_reply/${replyTo}/${corrId}`
+}
+function topicRpcReplyWildcard(replyTo: string): string {
+  return `inspire/rpc/_reply/${replyTo}/+`
+}
 
 class InspireClientImpl implements InspireClient {
   readonly slug: string
@@ -106,6 +161,16 @@ class InspireClientImpl implements InspireClient {
   private commandHandlers = new Map<string, (msg: CommandMsg) => void>()
   private commandMessageHandler: ((topic: string, payload: Buffer) => void) | null = null
   private stopped = false
+  // RPC + manifest state
+  private rpcHandlers = new Map<string, RpcHandler>()
+  private verbSpecs = new Map<string, VerbSpec>()
+  private rpcServerHandler: ((topic: string, payload: Buffer) => void) | null = null
+  /** reply_to id this instance uses when it acts as an RPC caller. */
+  private readonly replyTo: string
+  /** Pending outbound calls awaiting a reply, keyed by corr_id. */
+  private pendingCalls = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
+  private rpcReplyHandler: ((topic: string, payload: Buffer) => void) | null = null
+  private rpcReplySubscribed = false
 
   constructor(opts: {
     slug: string
@@ -122,6 +187,11 @@ class InspireClientImpl implements InspireClient {
     this.client = opts.client
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs
     this.startedAt = new Date().toISOString()
+    this.replyTo = `${opts.slug}-${opts.nodeId}-${process.pid}`
+  }
+
+  get verbs(): VerbSpec[] {
+    return [...this.verbSpecs.values()]
   }
 
   /** Internal: publish initial retained presence. */
@@ -191,6 +261,155 @@ class InspireClientImpl implements InspireClient {
     this.client.on('message', handler)
   }
 
+  // ── capability manifest ──
+
+  /** Publish the retained capability manifest built from registered verbs. */
+  private publishManifest(): Promise<void> {
+    const msg: CapabilityManifestMsg = {
+      v: 1,
+      app_slug: this.slug,
+      node_id: this.nodeId,
+      version: this.version,
+      ts: new Date().toISOString(),
+      verbs: this.verbs,
+    }
+    return new Promise((resolve, reject) => {
+      this.client.publish(
+        topicManifest(this.slug, this.nodeId),
+        JSON.stringify(msg),
+        { qos: 1, retain: true },
+        (err) => (err ? reject(err) : resolve()),
+      )
+    })
+  }
+
+  // ── RPC server (inbound: this app answers verbs) ──
+
+  /** Subscribe the inbound RPC call topic once; dispatch to registered handlers. */
+  private subscribeRpc(): void {
+    if (this.rpcServerHandler) return
+    const callTopic = topicRpcCall(this.slug, this.nodeId)
+    this.client.subscribe(callTopic, { qos: 1 })
+    const handler = (topic: string, payload: Buffer): void => {
+      if (topic !== callTopic) return
+      let req: RpcRequestMsg
+      try {
+        req = JSON.parse(payload.toString('utf8')) as RpcRequestMsg
+      } catch {
+        return // malformed — ignore
+      }
+      void this.dispatchRpc(req)
+    }
+    this.rpcServerHandler = handler
+    this.client.on('message', handler)
+  }
+
+  private async dispatchRpc(req: RpcRequestMsg): Promise<void> {
+    const replyTopic = topicRpcReply(req.reply_to, req.corr_id)
+    const fn = this.rpcHandlers.get(req.verb)
+    let res: RpcResponseMsg
+    if (!fn) {
+      res = {
+        v: 1,
+        corr_id: req.corr_id,
+        ok: false,
+        error: { message: `unknown verb: ${req.verb}`, code: 'UNKNOWN_VERB' },
+        ts: new Date().toISOString(),
+      }
+    } else {
+      try {
+        const result = await fn(req.args ?? {}, req)
+        res = { v: 1, corr_id: req.corr_id, ok: true, result, ts: new Date().toISOString() }
+      } catch (e) {
+        res = {
+          v: 1,
+          corr_id: req.corr_id,
+          ok: false,
+          error: { message: e instanceof Error ? e.message : String(e), code: 'HANDLER_ERROR' },
+          ts: new Date().toISOString(),
+        }
+      }
+    }
+    this.client.publish(replyTopic, JSON.stringify(res), { qos: 1, retain: false })
+  }
+
+  onCall(verb: string, handler: RpcHandler, spec?: Omit<VerbSpec, 'name'>): void {
+    const isNew = !this.verbSpecs.has(verb)
+    this.rpcHandlers.set(verb, handler)
+    this.verbSpecs.set(verb, { name: verb, ...spec })
+    this.subscribeRpc()
+    // Republish the manifest so discovery reflects the new verb. Best-effort:
+    // if not yet connected, start() publishes the full manifest anyway.
+    if (this.client.connected && (isNew || spec)) {
+      void this.publishManifest().catch(() => {})
+    }
+  }
+
+  // ── RPC client (outbound: this app calls another app's verb) ──
+
+  /** Lazily subscribe this caller's reply wildcard and install the demux handler. */
+  private ensureReplySubscription(): void {
+    if (this.rpcReplySubscribed) return
+    this.rpcReplySubscribed = true
+    this.client.subscribe(topicRpcReplyWildcard(this.replyTo), { qos: 1 })
+    const handler = (topic: string, payload: Buffer): void => {
+      if (!topic.startsWith(`inspire/rpc/_reply/${this.replyTo}/`)) return
+      let res: RpcResponseMsg
+      try {
+        res = JSON.parse(payload.toString('utf8')) as RpcResponseMsg
+      } catch {
+        return
+      }
+      const pending = this.pendingCalls.get(res.corr_id)
+      if (!pending) return
+      clearTimeout(pending.timer)
+      this.pendingCalls.delete(res.corr_id)
+      if (res.ok) pending.resolve(res.result)
+      else pending.reject(new Error(res.error?.message ?? 'rpc error'))
+    }
+    this.rpcReplyHandler = handler
+    this.client.on('message', handler)
+  }
+
+  call(
+    target: RpcTarget,
+    verb: string,
+    args: Record<string, unknown> = {},
+    opts?: { timeoutMs?: number },
+  ): Promise<unknown> {
+    this.ensureReplySubscription()
+    const corrId = newCorrId()
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
+    const req: RpcRequestMsg = {
+      v: 1,
+      corr_id: corrId,
+      reply_to: this.replyTo,
+      verb,
+      args,
+      ts: new Date().toISOString(),
+    }
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCalls.delete(corrId)
+        reject(new Error(`rpc call ${target.slug}/${target.nodeId}.${verb} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      if (typeof timer.unref === 'function') timer.unref()
+      this.pendingCalls.set(corrId, { resolve, reject, timer })
+      this.client.publish(
+        topicRpcCall(target.slug, target.nodeId),
+        JSON.stringify(req),
+        { qos: 1, retain: false },
+        (err) => {
+          if (err) {
+            clearTimeout(timer)
+            this.pendingCalls.delete(corrId)
+            reject(err)
+          }
+        },
+      )
+    })
+  }
+
   setStatus(state: StatusState, detail: string): Promise<void> {
     const msg: StatusMsg = { v: 1, state, detail, ts: new Date().toISOString() }
     return new Promise((resolve, reject) => {
@@ -230,6 +449,20 @@ class InspireClientImpl implements InspireClient {
       this.client.off('message', this.commandMessageHandler)
       this.commandMessageHandler = null
     }
+    if (this.rpcServerHandler) {
+      this.client.off('message', this.rpcServerHandler)
+      this.rpcServerHandler = null
+    }
+    if (this.rpcReplyHandler) {
+      this.client.off('message', this.rpcReplyHandler)
+      this.rpcReplyHandler = null
+    }
+    // Fail any in-flight outbound calls so callers don't hang on shutdown.
+    for (const [, p] of this.pendingCalls) {
+      clearTimeout(p.timer)
+      p.reject(new Error('inspire-sdk client stopped'))
+    }
+    this.pendingCalls.clear()
     // Only attempt the retained-clear publish if we're actually connected.
     // Offline, mqtt's publish callback never fires (it queues), and
     // `client.end(true)` will flush+drop the queue — atrium would then keep
@@ -240,6 +473,16 @@ class InspireClientImpl implements InspireClient {
       await new Promise<void>((resolve) => {
         this.client.publish(
           topicPresence(this.slug, this.nodeId),
+          Buffer.alloc(0),
+          { qos: 1, retain: true },
+          () => resolve(),
+        )
+      })
+      // Clear the retained manifest too, so atrium drops the app's API surface
+      // on graceful exit (LWT only covers presence).
+      await new Promise<void>((resolve) => {
+        this.client.publish(
+          topicManifest(this.slug, this.nodeId),
           Buffer.alloc(0),
           { qos: 1, retain: true },
           () => resolve(),
@@ -256,6 +499,8 @@ class InspireClientImpl implements InspireClient {
     await this.publishPresence()
     this.startHeartbeat()
     this.subscribeCommands()
+    this.subscribeRpc()
+    await this.publishManifest()
   }
 }
 
@@ -329,4 +574,18 @@ export const Inspire = {
   },
 }
 
-export type { CommandMsg, HeartbeatMsg, LogLevel, LogMsg, PresenceMsg, StatusMsg, StatusState }
+export type {
+  CapabilityManifestMsg,
+  CommandMsg,
+  HeartbeatMsg,
+  LogLevel,
+  LogMsg,
+  PresenceMsg,
+  RpcHandler,
+  RpcRequestMsg,
+  RpcResponseMsg,
+  RpcTarget,
+  StatusMsg,
+  StatusState,
+  VerbSpec,
+}
