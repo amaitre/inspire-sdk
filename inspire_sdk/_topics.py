@@ -34,3 +34,22 @@ def topic_log(slug: str, node_id: str) -> str:
 
 def topic_cmd(slug: str, node_id: str) -> str:
     return f"inspire/cmd/{slug}/{node_id}"
+
+
+# ── RPC + manifest (spec §6, additive). Mirrors sdk-node topic helpers. ──
+
+
+def topic_manifest(slug: str, node_id: str) -> str:
+    return f"inspire/manifest/{slug}/{node_id}"
+
+
+def topic_rpc_call(slug: str, node_id: str) -> str:
+    return f"inspire/rpc/{slug}/{node_id}/call"
+
+
+def topic_rpc_reply(reply_to: str, corr_id: str) -> str:
+    return f"inspire/rpc/_reply/{reply_to}/{corr_id}"
+
+
+def topic_rpc_reply_wildcard(reply_to: str) -> str:
+    return f"inspire/rpc/_reply/{reply_to}/+"

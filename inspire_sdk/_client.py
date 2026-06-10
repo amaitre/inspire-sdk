@@ -38,7 +38,11 @@ from ._topics import (
     topic_cmd,
     topic_heartbeat,
     topic_log,
+    topic_manifest,
     topic_presence,
+    topic_rpc_call,
+    topic_rpc_reply,
+    topic_rpc_reply_wildcard,
     topic_status,
 )
 from ._types import (
@@ -47,9 +51,15 @@ from ._types import (
     LogLevel,
     LogMsg,
     PresenceMsg,
+    RpcRequestMsg,
+    RpcResponseMsg,
     StatusMsg,
     StatusState,
+    VerbSpec,
 )
+
+DEFAULT_RPC_TIMEOUT_S = 8.0
+RpcHandler = Callable[[dict, "RpcRequestMsg"], Any]
 
 
 DEFAULT_BROKER_HOST = "127.0.0.1"
@@ -163,6 +173,26 @@ class InspireClient:
         self._command_handlers: dict[str, Callable[[CommandMsg], None]] = {}
         self._stopped = False
         self._stop_lock = threading.Lock()
+        # RPC + manifest state
+        self._rpc_handlers: dict[str, RpcHandler] = {}
+        self._verb_specs: dict[str, VerbSpec] = {}
+        self._reply_to = f"{slug}-{node_id}-{os.getpid()}"
+        self._rpc_subscribed = False
+        self._reply_subscribed = False
+        # corr_id -> {"event": Event, "result": ..., "error": str|None}
+        self._pending: dict[str, dict[str, Any]] = {}
+        self._pending_lock = threading.Lock()
+        self._rpc_counter = 0
+        self._rpc_counter_lock = threading.Lock()
+
+    @property
+    def verbs(self) -> list[VerbSpec]:
+        return list(self._verb_specs.values())
+
+    def _new_corr_id(self) -> str:
+        with self._rpc_counter_lock:
+            self._rpc_counter += 1
+            return f"{os.getpid():x}-{self._rpc_counter:x}"
 
     def set_status(self, state: StatusState, detail: str) -> None:
         """Publish a retained StatusMsg. Blocks until QoS 1 ack or timeout."""
@@ -210,8 +240,141 @@ class InspireClient:
         """Register a handler for an inbound CommandMsg verb."""
         self._command_handlers[cmd] = handler
 
+    # ── capability manifest ──
+
+    def _publish_manifest(self) -> None:
+        msg = {
+            "v": 1,
+            "app_slug": self.slug,
+            "node_id": self.node_id,
+            "version": self._version,
+            "ts": _utc_now_iso(),
+            "verbs": self.verbs,
+        }
+        info = self._client.publish(
+            topic_manifest(self.slug, self.node_id),
+            json.dumps(msg),
+            qos=1,
+            retain=True,
+        )
+        info.wait_for_publish(timeout=PUBLISH_ACK_TIMEOUT_S)
+
+    # ── RPC server (inbound: this app answers verbs) ──
+
+    def on_call(
+        self,
+        verb: str,
+        handler: RpcHandler,
+        spec: Optional[dict] = None,
+    ) -> None:
+        """Register an RPC verb handler. The handler's return value is sent
+        back to the caller; an exception becomes an error response. Adds the
+        verb to the capability manifest and republishes it."""
+        is_new = verb not in self._verb_specs
+        self._rpc_handlers[verb] = handler
+        vspec: VerbSpec = {"name": verb}
+        if spec:
+            vspec.update(spec)  # type: ignore[typeddict-item]
+        self._verb_specs[verb] = vspec
+        if not self._rpc_subscribed:
+            self._rpc_subscribed = True
+            self._client.subscribe(topic_rpc_call(self.slug, self.node_id), qos=1)
+        if self._client.is_connected() and (is_new or spec):
+            try:
+                self._publish_manifest()
+            except Exception:
+                pass
+
+    def _dispatch_rpc(self, req: "RpcRequestMsg") -> None:
+        reply_topic = topic_rpc_reply(req["reply_to"], req["corr_id"])
+        fn = self._rpc_handlers.get(req["verb"])
+        if fn is None:
+            res = {
+                "v": 1,
+                "corr_id": req["corr_id"],
+                "ok": False,
+                "error": {"message": f"unknown verb: {req['verb']}", "code": "UNKNOWN_VERB"},
+                "ts": _utc_now_iso(),
+            }
+        else:
+            try:
+                result = fn(req.get("args", {}), req)
+                res = {"v": 1, "corr_id": req["corr_id"], "ok": True, "result": result, "ts": _utc_now_iso()}
+            except Exception as exc:  # noqa: BLE001
+                res = {
+                    "v": 1,
+                    "corr_id": req["corr_id"],
+                    "ok": False,
+                    "error": {"message": str(exc), "code": "HANDLER_ERROR"},
+                    "ts": _utc_now_iso(),
+                }
+        self._client.publish(reply_topic, json.dumps(res), qos=1, retain=False)
+
+    # ── RPC client (outbound: this app calls another app's verb) ──
+
+    def _ensure_reply_subscription(self) -> None:
+        if self._reply_subscribed:
+            return
+        self._reply_subscribed = True
+        self._client.subscribe(topic_rpc_reply_wildcard(self._reply_to), qos=1)
+
+    def call(
+        self,
+        target: dict,
+        verb: str,
+        args: Optional[dict] = None,
+        timeout_s: float = DEFAULT_RPC_TIMEOUT_S,
+    ) -> Any:
+        """Invoke a verb on a (possibly remote, across-bridge) app and block
+        for the result. Raises TimeoutError on timeout, RuntimeError on an
+        error response. `target` is {"slug": ..., "node_id"/"nodeId": ...}."""
+        self._ensure_reply_subscription()
+        corr_id = self._new_corr_id()
+        node_id = target.get("node_id") or target.get("nodeId")
+        req: RpcRequestMsg = {
+            "v": 1,
+            "corr_id": corr_id,
+            "reply_to": self._reply_to,
+            "verb": verb,
+            "args": args or {},
+            "ts": _utc_now_iso(),
+        }
+        event = threading.Event()
+        with self._pending_lock:
+            self._pending[corr_id] = {"event": event, "result": None, "error": None}
+        self._client.publish(
+            topic_rpc_call(target["slug"], node_id),
+            json.dumps(req),
+            qos=1,
+            retain=False,
+        )
+        if not event.wait(timeout=timeout_s):
+            with self._pending_lock:
+                self._pending.pop(corr_id, None)
+            raise TimeoutError(
+                f"rpc call {target['slug']}/{node_id}.{verb} timed out after {timeout_s}s"
+            )
+        with self._pending_lock:
+            entry = self._pending.pop(corr_id, None)
+        if entry and entry["error"] is not None:
+            raise RuntimeError(entry["error"])
+        return entry["result"] if entry else None
+
+    def _handle_reply(self, res: "RpcResponseMsg") -> None:
+        corr_id = res.get("corr_id")
+        with self._pending_lock:
+            entry = self._pending.get(corr_id)
+            if entry is None:
+                return
+            if res.get("ok"):
+                entry["result"] = res.get("result")
+            else:
+                err = res.get("error") or {}
+                entry["error"] = err.get("message", "rpc error")
+            entry["event"].set()
+
     def stop(self) -> None:
-        """Tear down: clear retained presence, stop heartbeat, disconnect.
+        """Tear down: clear retained presence + manifest, stop heartbeat, disconnect.
 
         Idempotent — calling stop() twice does nothing the second time.
         """
@@ -235,6 +398,20 @@ class InspireClient:
                 retain=True,
             )
             info.wait_for_publish(timeout=PUBLISH_ACK_TIMEOUT_S)
+            # Clear the retained manifest too (LWT only covers presence).
+            info2 = self._client.publish(
+                topic_manifest(self.slug, self.node_id),
+                b"",
+                qos=1,
+                retain=True,
+            )
+            info2.wait_for_publish(timeout=PUBLISH_ACK_TIMEOUT_S)
+
+        # Fail any in-flight outbound calls so callers don't block until timeout.
+        with self._pending_lock:
+            for entry in self._pending.values():
+                entry["error"] = "inspire-sdk client stopped"
+                entry["event"].set()
 
         self._client.loop_stop()
         self._client.disconnect()
@@ -263,7 +440,13 @@ class InspireClient:
 
         cmd_topic = topic_cmd(self.slug, self.node_id)
         self._client.subscribe(cmd_topic, qos=1)
+        # Subscribe the inbound RPC call topic so this app can answer verbs.
+        self._rpc_subscribed = True
+        self._client.subscribe(topic_rpc_call(self.slug, self.node_id), qos=1)
         self._client.on_message = self._on_message
+
+        # Publish the (possibly empty) capability manifest, retained.
+        self._publish_manifest()
 
         self._heartbeat.start()
 
@@ -273,20 +456,32 @@ class InspireClient:
         userdata: Any,
         message: mqtt.MQTTMessage,
     ) -> None:
-        # Defensive: paho also delivers messages from any other subscription
-        # we might add later. Filter by topic before parsing.
-        if message.topic != topic_cmd(self.slug, self.node_id):
-            return
+        # Single paho callback fans out to several subscriptions; route by topic.
+        topic = message.topic
         try:
-            parsed: CommandMsg = json.loads(message.payload.decode("utf-8"))
+            parsed = json.loads(message.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return  # malformed — ignore (matches sdk-node behavior)
-        cmd = parsed.get("cmd")
-        if cmd is None:
+
+        # 1) atrium command channel (fire-and-forget)
+        if topic == topic_cmd(self.slug, self.node_id):
+            cmd = parsed.get("cmd")
+            if cmd is None:
+                return
+            handler = self._command_handlers.get(cmd)
+            if handler is not None:
+                handler(parsed)
             return
-        handler = self._command_handlers.get(cmd)
-        if handler is not None:
-            handler(parsed)
+
+        # 2) inbound RPC request (this app is the server)
+        if topic == topic_rpc_call(self.slug, self.node_id):
+            self._dispatch_rpc(parsed)
+            return
+
+        # 3) RPC reply addressed to us (this app is the caller)
+        if topic.startswith(f"inspire/rpc/_reply/{self._reply_to}/"):
+            self._handle_reply(parsed)
+            return
 
 
 class Inspire:

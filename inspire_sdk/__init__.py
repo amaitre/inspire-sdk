@@ -13,20 +13,25 @@ Usage (the 5-line "near boot" snippet from the migration guide):
     client.stop()
 """
 
-from ._client import Inspire, InspireClient
+from ._client import Inspire, InspireClient, RpcHandler
 from ._types import (
+    CapabilityManifestMsg,
     CommandMsg,
     HeartbeatMsg,
     LogLevel,
     LogMsg,
     PresenceMsg,
+    RpcRequestMsg,
+    RpcResponseMsg,
     StatusMsg,
     StatusState,
+    VerbSpec,
 )
 
 __all__ = [
     "Inspire",
     "InspireClient",
+    "RpcHandler",
     "CommandMsg",
     "HeartbeatMsg",
     "LogLevel",
@@ -34,6 +39,10 @@ __all__ = [
     "PresenceMsg",
     "StatusMsg",
     "StatusState",
+    "CapabilityManifestMsg",
+    "RpcRequestMsg",
+    "RpcResponseMsg",
+    "VerbSpec",
 ]
 
 __version__ = "0.1.0"
