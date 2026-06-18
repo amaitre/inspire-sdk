@@ -21,8 +21,33 @@ process.on('SIGTERM', () => void client.stop())
 process.on('SIGINT', () => void client.stop())
 ```
 
-`Inspire.start()` connects to `127.0.0.1:1883` by default. Override via
-`broker: { host, port }` or your `.inspire/config.toml` parsing.
+### Broker resolution
+
+`Inspire.start()` resolves the broker with this precedence:
+
+1. explicit `broker: { host, port }`
+2. env — `INSPIRE_BROKER_HOST` / `INSPIRE_BROKER_PORT` (or bare `BROKER_HOST` / `BROKER_PORT`)
+3. **`.inspire/config.toml`** — walked up from cwd, `[broker] host/port` (and `[reporting] heartbeat_interval_s`)
+4. default `127.0.0.1:1883`
+
+The SDK now owns `.inspire/config.toml` parsing — consumers no longer hand-roll
+it. A missing or malformed config never throws; it falls through to env/defaults.
+Pass `loadConfig: false` to skip file resolution entirely.
+
+```ts
+import { loadInspireConfig, resolveBroker } from 'inspire-sdk' // exported for advanced use
+```
+
+Example `.inspire/config.toml`:
+
+```toml
+schema_version = 1
+[broker]
+host = "192.168.1.156"  # fleet broker (Ming) to federate across boxes
+port = 1883
+[reporting]
+heartbeat_interval_s = 10
+```
 
 ## What you get
 

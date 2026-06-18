@@ -32,6 +32,8 @@ import os from 'node:os'
 
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt'
 
+import { loadInspireConfig, resolveBroker } from './config'
+
 import type {
   CapabilityManifestMsg,
   CommandMsg,
@@ -75,6 +77,8 @@ export interface InspireStartOptions {
   /** mqtt connect options pass-through (advanced). */
   reconnectPeriod?: number
   connectTimeout?: number
+  /** Skip `.inspire/config.toml` resolution (default: false — config is read). */
+  loadConfig?: boolean
 }
 
 export interface InspireClient {
@@ -515,9 +519,16 @@ export const Inspire = {
     const slug = opts.slug
     if (!slug) throw new Error('Inspire.start: slug is required')
     const nodeId = opts.nodeId ?? slugifyNodeId(os.hostname())
-    const host = opts.broker?.host ?? DEFAULT_BROKER_HOST
-    const port = opts.broker?.port ?? DEFAULT_BROKER_PORT
-    const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS
+    // Resolve broker via opts > env > .inspire/config.toml > defaults so the
+    // documented config.toml override finally works and consumers can drop
+    // their hand-rolled broker plumbing. Skippable with loadConfig: false.
+    const fileConfig = opts.loadConfig === false ? {} : loadInspireConfig()
+    const { host, port } = resolveBroker(opts.broker, fileConfig, {
+      host: DEFAULT_BROKER_HOST,
+      port: DEFAULT_BROKER_PORT,
+    })
+    const heartbeatIntervalMs =
+      opts.heartbeatIntervalMs ?? fileConfig.reporting?.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS
     const serviceMode = opts.serviceMode ?? false
 
     const connectOpts: IClientOptions = {
@@ -573,6 +584,9 @@ export const Inspire = {
     return inst
   },
 }
+
+export { findInspireConfigPath, loadInspireConfig, resolveBroker } from './config'
+export type { InspireConfig } from './config'
 
 export type {
   CapabilityManifestMsg,

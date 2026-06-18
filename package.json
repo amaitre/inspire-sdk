@@ -11,7 +11,8 @@
     "test": "bun test test/"
   },
   "dependencies": {
-    "mqtt": "^5.10.1"
+    "mqtt": "^5.10.1",
+    "smol-toml": "^1.6.1"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
