@@ -1,10 +1,11 @@
-// Wire-format types for the inspire-* MQTT bus, mirroring spec §4.2 of
-// `INSPIRE_ATRIUM_SPEC_ADDENDUM_2.md`. Intentionally duplicated from
-// `src/shared/inspire.ts` / `src/main/inspire/types.ts` so this SDK can be
-// extracted to its own repo with no source dependency on atrium.
+// Wire-format types for the inspire-* MQTT bus, per spec §4.2 of
+// `INSPIRE_ATRIUM_SPEC_ADDENDUM_2.md`. This module is the CANONICAL source of
+// truth for the wire contract: atrium re-exports these from `inspire-sdk`
+// (see src/main/inspire/types.ts) instead of maintaining a parallel copy, and
+// the Python SDK (sdk-python/inspire_sdk/_types.py) mirrors them — field parity
+// is enforced by the cross-language conformance test (test/conformance.spec.ts).
 //
-// Asymmetry: `AtriumPresenceMsg` lives only in atrium's copy of the types —
-// only atrium publishes it. SDK-side apps don't need it.
+// `AtriumPresenceMsg` stays atrium-local — only atrium publishes it.
 
 export interface PresenceMsg {
   v: 1
