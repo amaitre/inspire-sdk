@@ -19,7 +19,7 @@ import mqtt from 'mqtt'
 
 import { Inspire, type InspireClient } from '../src/index'
 
-const PY_TYPES = path.join(import.meta.dir, '..', '..', 'sdk-python', 'inspire_sdk', '_types.py')
+const PY_TYPES = path.join(import.meta.dir, '..', 'sdk-python', 'inspire_sdk', '_types.py')
 
 /** Parse Python TypedDict field names from _types.py. Returns class -> field set. */
 function parsePythonTypedDicts(src: string): Record<string, Set<string>> {

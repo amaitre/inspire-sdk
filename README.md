@@ -1,3 +1,12 @@
+# inspire-sdk
+
+> Monorepo for the inspire-* fleet SDK — **Node** (this root) + **Python** (`sdk-python/`).
+> Both languages version together (one git tag); the Node↔Python wire conformance
+> test (`test/conformance.spec.ts`) keeps them in lockstep. Extracted from
+> inspire-atrium 2026-06-18 (Slice E). Node consumers: `bun add github:amaitre/inspire-sdk#vX.Y.Z`.
+
+---
+
 # inspire-sdk (Node)
 
 The Node SDK for inspire-* apps to participate in the inspire-atrium MQTT bus.
@@ -74,3 +83,7 @@ bun test test/
 ```
 
 Tests use an in-process `aedes` broker on a random port — no Mosquitto needed.
+
+> CI: `docs/ci.yml.example` is the intended `.github/workflows/ci.yml`. It was not
+> committed under `.github/` because the push token lacks the `workflow` scope.
+> Enable with: `gh auth refresh -s workflow` then move it into place, or add via the GitHub UI.
