@@ -52,7 +52,7 @@ Example `.inspire/config.toml`:
 ```toml
 schema_version = 1
 [broker]
-host = "192.168.1.156"  # fleet broker (Ming) to federate across boxes
+host = "192.168.1.10"  # your fleet broker, to federate across boxes
 port = 1883
 [reporting]
 heartbeat_interval_s = 10

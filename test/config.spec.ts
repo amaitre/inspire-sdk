@@ -59,10 +59,10 @@ describe('loadInspireConfig', () => {
   it('parses the canonical broker + reporting format', () => {
     writeConfig(
       tmp,
-      'schema_version = 1\n[broker]\nhost = "192.168.1.156"\nport = 1884\n[reporting]\nheartbeat_interval_s = 10\n',
+      'schema_version = 1\n[broker]\nhost = "192.168.1.10"\nport = 1884\n[reporting]\nheartbeat_interval_s = 10\n',
     )
     const cfg = loadInspireConfig(tmp)
-    expect(cfg.broker).toEqual({ host: '192.168.1.156', port: 1884 })
+    expect(cfg.broker).toEqual({ host: '192.168.1.10', port: 1884 })
     expect(cfg.reporting?.heartbeatIntervalMs).toBe(10_000)
   })
 
