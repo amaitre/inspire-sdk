@@ -23,7 +23,8 @@
 //
 // What `stop()` does:
 //   1. Clears the heartbeat interval.
-//   2. Publishes empty retained payload on the presence topic (graceful clear).
+//   2. Publishes empty retained payloads to clear the manifest, THEN presence
+//      (manifest-first so the API surface retires before the liveness row).
 //   3. Disconnects.
 //
 // Slice E will add `forwardClaudeSession()`. NOT in this slice.
@@ -470,19 +471,23 @@ class InspireClientImpl implements InspireClient {
     // Skipping the publish when offline is correct: LWT (set up at connect
     // time) handles the cleanup on the broker's reconnect-and-disconnect.
     if (this.client.connected) {
+      // Clear the retained manifest FIRST, then presence. Order matters: the
+      // manifest advertises the app's API surface and presence is the liveness
+      // row. Retiring presence first leaves a window where the app reads "live"
+      // while still advertising verbs that are already gone — a caller could
+      // dispatch into a vanished target. Manifest-first closes that window.
+      // (LWT only covers presence, so the manifest clear is graceful-only.)
       await new Promise<void>((resolve) => {
         this.client.publish(
-          topicPresence(this.slug, this.nodeId),
+          topicManifest(this.slug, this.nodeId),
           Buffer.alloc(0),
           { qos: 1, retain: true },
           () => resolve(),
         )
       })
-      // Clear the retained manifest too, so atrium drops the app's API surface
-      // on graceful exit (LWT only covers presence).
       await new Promise<void>((resolve) => {
         this.client.publish(
-          topicManifest(this.slug, this.nodeId),
+          topicPresence(this.slug, this.nodeId),
           Buffer.alloc(0),
           { qos: 1, retain: true },
           () => resolve(),
