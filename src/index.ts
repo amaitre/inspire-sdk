@@ -33,7 +33,20 @@ import os from 'node:os'
 
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt'
 
+import { createBusClient, type BusClient, type BusClientOptions } from './bus'
 import { loadInspireConfig, resolveBroker } from './config'
+import {
+  slugifyNodeId,
+  topicCmd,
+  topicHeartbeat,
+  topicLog,
+  topicManifest,
+  topicPresence,
+  topicRpcCall,
+  topicRpcReply,
+  topicRpcReplyWildcard,
+  topicStatus,
+} from './topics'
 
 import type {
   CapabilityManifestMsg,
@@ -114,44 +127,6 @@ export interface InspireClient {
   readonly nodeId: string
   /** Resolved slug. */
   readonly slug: string
-}
-
-/** Slugify a hostname per spec §4: lowercase, non-alphanumerics → '-'. */
-function slugifyNodeId(hostname: string): string {
-  const lowered = (hostname ?? '').toLowerCase()
-  const dashed = lowered.replace(/[^a-z0-9]+/g, '-')
-  const trimmed = dashed.replace(/^-+|-+$/g, '')
-  return trimmed.length > 0 ? trimmed : 'unknown'
-}
-
-function topicPresence(slug: string, nodeId: string): string {
-  return `inspire/presence/${slug}/${nodeId}`
-}
-function topicHeartbeat(slug: string, nodeId: string): string {
-  return `inspire/heartbeat/${slug}/${nodeId}`
-}
-function topicStatus(slug: string, nodeId: string): string {
-  return `inspire/status/${slug}/${nodeId}`
-}
-function topicLog(slug: string, nodeId: string): string {
-  return `inspire/log/${slug}/${nodeId}`
-}
-function topicCmd(slug: string, nodeId: string): string {
-  return `inspire/cmd/${slug}/${nodeId}`
-}
-function topicManifest(slug: string, nodeId: string): string {
-  return `inspire/manifest/${slug}/${nodeId}`
-}
-/** Inbound RPC requests for this app instance. */
-function topicRpcCall(slug: string, nodeId: string): string {
-  return `inspire/rpc/${slug}/${nodeId}/call`
-}
-/** Reply channel keyed by the caller's reply_to id. Caller subscribes the `+` wildcard. */
-function topicRpcReply(replyTo: string, corrId: string): string {
-  return `inspire/rpc/_reply/${replyTo}/${corrId}`
-}
-function topicRpcReplyWildcard(replyTo: string): string {
-  return `inspire/rpc/_reply/${replyTo}/+`
 }
 
 class InspireClientImpl implements InspireClient {
@@ -588,10 +563,23 @@ export const Inspire = {
     await inst.start()
     return inst
   },
+
+  /**
+   * Create a consumer/hub bus client (observer + caller): subscribes to every
+   * app's presence/heartbeat/status/manifest as typed events and can `call()`
+   * any app's RPC verb. Optionally publishes a retained self-presence (hubs).
+   * Returns immediately, NOT connected — wire up `.on(...)` then `.connect()`.
+   */
+  observe(opts: BusClientOptions = {}): BusClient {
+    return createBusClient(opts)
+  },
 }
 
 export { findInspireConfigPath, loadInspireConfig, resolveBroker } from './config'
 export type { InspireConfig } from './config'
+export { createBusClient } from './bus'
+export type { BusClient, BusClientOptions, SelfPresence } from './bus'
+export * as topics from './topics'
 
 export type {
   CapabilityManifestMsg,
