@@ -15,5 +15,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
+      - run: sudo apt-get update && sudo apt-get install -y mosquitto  # the python tests spawn a real broker
       - run: pip install -e ./sdk-python pytest
       - run: cd sdk-python && pytest -q
