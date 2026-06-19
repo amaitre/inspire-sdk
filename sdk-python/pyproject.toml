@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "inspire-sdk"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python SDK for inspire-* apps to participate in the inspire-atrium MQTT bus"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,9 @@ dependencies = ["paho-mqtt>=2.0.0", 'typing_extensions>=4.0; python_version<"3.1
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
+# The sibling-comm layer (inspire_sdk.sibling) is async and broker-backed by
+# aiomqtt — kept optional so the core app-bus client stays paho-only.
+sibling = ["aiomqtt>=2.0.0", "PyYAML>=6.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["inspire_sdk"]

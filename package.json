@@ -1,6 +1,6 @@
 {
   "name": "inspire-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Node SDK for inspire-* apps to participate in the inspire-atrium MQTT bus",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
