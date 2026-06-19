@@ -84,6 +84,3 @@ bun test test/
 
 Tests use an in-process `aedes` broker on a random port — no Mosquitto needed.
 
-> CI: `docs/ci.yml.example` is the intended `.github/workflows/ci.yml`. It was not
-> committed under `.github/` because the push token lacks the `workflow` scope.
-> Enable with: `gh auth refresh -s workflow` then move it into place, or add via the GitHub UI.
