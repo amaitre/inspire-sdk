@@ -58,6 +58,7 @@ but they are different wire contracts. Know which one you're joining.
 | Cross-box reliability behavior (partition, LWT, retained) | `inspire-fleet-test` README + FINDINGS.md |
 | Live bus defects & verified-good behaviors | `inspire-fleet-test/FINDINGS.md` |
 | Fleet repo/deploy conventions | `fleet-ops-centralization/FLEET-REPO-CONVENTIONS.md` |
+| Volatile fleet values (box IPs/hostnames, hub brokers, listeners, integration branches, service homes) | `fleet-ops-centralization/FLEET-FACTS.md` — probe-backed; checked by fleet-doctor's doc-truth section |
 
 ## 4. Adding an app to the app bus (onboarding)
 
