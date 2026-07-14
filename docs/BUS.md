@@ -23,7 +23,7 @@ but they are different wire contracts. Know which one you're joining.
 | Spec | `docs/sibling-comm-spec.md` (broker section has a 2026-07-13 status update) | envelope: atrium Addendum 2 §4.2 · RPC/manifest/federation: atrium **Addendum 3** |
 | Impl | `sdk-python/inspire_sdk/sibling/` (**Python only** — no node impl exists) | `src/` (node) + `sdk-python/inspire_sdk/` (python) |
 | Topology | **hub-and-spoke on Ming's broker** — every box connects directly to `192.168.1.156:1883` via `~/.claude/PAI/USER/Config/sibling.yaml` (verified all 3 boxes 2026-07-13) | **federated per-host brokers** bridged through Ata (below) |
-| Config | `sibling.yaml` (own format: broker_host/port/tls/user/pass) | node: env → `.inspire/config.toml` → localhost; python: `broker=` arg only |
+| Config | `sibling.yaml` (own format: broker_host/port/tls/user/pass) | both SDKs (parity 2026-07-14): explicit opts → env → `.inspire/config.toml` → localhost |
 
 ## 2. App-bus topology (the part three .conf files encode)
 
@@ -61,10 +61,11 @@ but they are different wire contracts. Know which one you're joining.
 
 ## 4. Adding an app to the app bus (onboarding)
 
-1. **Node**: `Inspire.start({slug, version, serviceMode?})` — broker resolution:
-   explicit opts → `INSPIRE_BROKER_HOST/PORT` → `BROKER_HOST/PORT` → `.inspire/config.toml`
-   → `127.0.0.1:1883`. **Python**: `Inspire.start(slug=..., version=...)` — `broker=` arg
-   or localhost default ONLY (no env/toml — see sdk-python README divergence note).
+1. **Node**: `Inspire.start({slug, version, serviceMode?})` · **Python**:
+   `Inspire.start(slug=..., version=...)`. Broker resolution is IDENTICAL in both
+   (python parity landed 2026-07-14): explicit opts/`broker=` → `INSPIRE_BROKER_HOST/PORT`
+   → `BROKER_HOST/PORT` → `.inspire/config.toml` → `127.0.0.1:1883`
+   (node `src/config.ts`, python `_config.py`).
 2. You get for free: retained presence (+LWT), 10s heartbeat, `setStatus`/`set_status`
    (retained), `log`.
 3. **Expose verbs**: `onCall(verb, handler, spec)` / `on_call(...)` — each registration
@@ -86,17 +87,18 @@ but they are different wire contracts. Know which one you're joining.
 - **LWT covers presence ONLY** (one will per connection). A crashed app leaves a **stale
   retained manifest**; atrium's ManifestRegistry evicts it when presence goes null
   (`manifestRegistry.ts:74-78`). The supervisor does NOT read manifests — presence only.
-- **Retained-clear ordering diverges on graceful stop**: node clears manifest→presence
-  (`src/index.ts:459-475`); python clears presence→manifest (`_client.py:393-408`) —
-  a brief dead-but-advertised window for python apps. Offline stop skips retained-clear
-  entirely (LWT handles it).
+- **Retained-clear ordering on graceful stop is manifest→presence in BOTH SDKs**
+  (`src/index.ts` · `_client.py`; python matched node 2026-07-14) — presence-first
+  would leave a dead-but-advertised window where the app reads "live" while its verbs
+  are already gone. Offline stop skips retained-clear entirely (LWT handles it).
 - **Heartbeat does not fire immediately on start** — consumers use a freshness window,
   not a count (`index.ts:218-220`).
 - **RPC timeout matrix**: app client 8s (`index.ts:70`) · observer/hub 20s (`bus.ts:40`,
   atrium sets 20s) · python 8.0s (`_client.py:61`). RPC is fail-closed under partition.
 - **Known wire quirks**: `cpu_pct` is hardcoded 0 in both SDKs; `rss_mb` is *current* RSS
-  in node but *peak* RSS in python (different metric, same field); `CommandMsg` is
-  stricter in node (verb union + required fields) than python.
+  in both (python reads `/proc/self/status` VmRSS since 2026-07-14, falling back to peak
+  ru_maxrss only where /proc is unavailable); `CommandMsg` is stricter in node
+  (verb union + required fields) than python.
 - **`inspire/log/#` is write-only today** — both SDKs publish it, nothing subscribes.
 - **`inspire/sibling/principal/broadcast`** is a declared-but-never-used dead constant.
 - **clientId conventions** (collision-relevant): app `<slug>-<nodeId>-<pid>` · observer
@@ -121,4 +123,5 @@ mosquitto_sub -h 192.168.1.156 -t 'inspire/sibling/presence/+' -v -W 2   # needs
 Gotchas when things look wrong: a "live" manifest with no presence = crashed app awaiting
 eviction (§5); an app visible on its own box but not on Ata = bridge down (`systemctl
 status mosquitto` + bridge conf host); a python app "ignoring" `INSPIRE_BROKER_HOST` =
-by-design divergence (§4.1).
+running a pre-2026-07-14 install — the SDK honors it now (§4.1), so reinstall/upgrade
+the app's vendored inspire-sdk.

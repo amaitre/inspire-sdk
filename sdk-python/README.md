@@ -31,14 +31,23 @@ client.set_status("ready", "library loaded")
 client.stop()  # on graceful shutdown
 ```
 
-`Inspire.start()` connects to `127.0.0.1:1883` by default. Override via
-`broker={"host": ..., "port": ...}`.
+`Inspire.start()` resolves the broker with the **same precedence chain as the
+Node SDK** (`_config.py`, mirroring `src/config.ts`):
 
-> ⚠️ **Divergence from Node (by current implementation, 2026-07-13):** unlike the
-> Node SDK, this package reads **neither** `INSPIRE_BROKER_HOST`/`INSPIRE_BROKER_PORT`
-> env vars **nor** `.inspire/config.toml` (`_client.py` — broker comes only from the
-> `broker=` argument or the localhost default). If your app should honor those, read
-> them yourself and pass `broker=`. Tracked as a parity decision, not a bug.
+1. explicit `broker={"host": ..., "port": ...}` argument
+2. `INSPIRE_BROKER_HOST` / `INSPIRE_BROKER_PORT` env vars
+3. bare `BROKER_HOST` / `BROKER_PORT` env vars
+4. `.inspire/config.toml` `[broker]` host/port (walk-up search from cwd to root)
+5. `127.0.0.1:1883`
+
+Host and port resolve independently (e.g. env host + toml port is valid). A
+missing or malformed `config.toml` is ignored, never fatal. On Python 3.10 the
+`tomli` backport is pulled in automatically (stdlib `tomllib` is 3.11+).
+
+> **Parity note (landed 2026-07-14):** this package previously read neither the
+> env vars nor `.inspire/config.toml` — broker came only from the `broker=`
+> argument or the localhost default. That divergence from Node is now resolved;
+> both SDKs share the chain above.
 
 ## What you get
 
@@ -54,9 +63,9 @@ client.stop()  # on graceful shutdown
   `inspire/manifest/<slug>/<nodeId>`; `call(slug, node_id, verb, args, timeout=8.0)`
   invokes a remote verb with `corr_id` correlation. Contract: atrium Addendum 3 §2-3;
   implementation `inspire_sdk/_client.py`.
-- `stop()` clears retained presence, stops the heartbeat, disconnects.
-  (Note: python clears presence→manifest, node clears manifest→presence — a brief
-  live-manifest window exists for stopping python apps; see `../docs/BUS.md` gotchas.)
+- `stop()` clears the retained manifest first, then presence (same order as
+  node — closes the dead-but-advertised window), stops the heartbeat,
+  disconnects. (Ordering parity with node landed 2026-07-14.)
 
 ## Mock app
 

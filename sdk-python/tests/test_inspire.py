@@ -176,6 +176,67 @@ class TestInspireSDK:
             sub.loop_stop()
             sub.disconnect()
 
+    def test_stop_clears_manifest_before_presence(self, broker_port: int):
+        """Parity with sdk-node: graceful stop retires the capability manifest
+        FIRST, then presence — otherwise there's a window where the app reads
+        "live" while advertising verbs that are already gone."""
+        client = Inspire.start(
+            slug="mock-app",
+            version="0.1.0",
+            broker={"host": "127.0.0.1", "port": broker_port},
+            node_id="host-1",
+            heartbeat_interval_s=60.0,
+        )
+        # One subscriber over both topics so broker delivery order is a single
+        # ordered stream — the recorded clear order is the publish order.
+        sub, received, _arrived = _raw_subscriber(
+            broker_port, "inspire/+/mock-app/host-1"
+        )
+        try:
+            client.stop()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                clears = [m.topic for m in received if len(m.payload) == 0]
+                if len(clears) >= 2:
+                    break
+                time.sleep(0.05)
+            clears = [m.topic for m in received if len(m.payload) == 0]
+            assert clears == [
+                "inspire/manifest/mock-app/host-1",
+                "inspire/presence/mock-app/host-1",
+            ], f"retained-clear order wrong: {clears}"
+        finally:
+            sub.loop_stop()
+            sub.disconnect()
+
+    def test_heartbeat_rss_mb_is_current_rss_not_peak(self, broker_port: int):
+        """Parity with sdk-node (`process.memoryUsage().rss` = current): on
+        Linux rss_mb must come from /proc/self/status VmRSS, with getrusage
+        ru_maxrss (peak) only as a fallback."""
+        from inspire_sdk._client import _process_rss_mb
+
+        # 1) The Linux path parses VmRSS (kB → MB) and stays close to it.
+        with open("/proc/self/status", encoding="ascii") as fh:
+            vmrss_kb = next(
+                int(line.split()[1]) for line in fh if line.startswith("VmRSS:")
+            )
+        reported = _process_rss_mb()
+        assert abs(reported - vmrss_kb // 1024) <= 2, (
+            f"rss_mb {reported} not tracking current VmRSS {vmrss_kb // 1024} MB"
+        )
+        # 2) Current RSS can never exceed the process's peak; if the value
+        # were still ru_maxrss (peak) this equality would be the giveaway
+        # after any allocation spike. Sanity: reported <= peak.
+        import resource
+
+        peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+        assert reported <= peak_mb
+
+        # 3) Fallback: an unreadable /proc path degrades to ru_maxrss (peak
+        # only ever rises, so allow it to have crept up by a MB in between).
+        fallback = _process_rss_mb(proc_status_path="/nonexistent/status")
+        assert 0 <= fallback - peak_mb <= 1
+
     def test_ac4_wire_path_under_2s(self, broker_port: int):
         """Spec §10 AC 4: SDK presence appears within 2s on fresh subscribe."""
         started_at = time.monotonic()

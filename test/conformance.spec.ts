@@ -3,7 +3,7 @@
 // declare the same field names so atrium can't tell which language produced a
 // row. This guards the structural contract — if someone adds/renames a field in
 // one SDK and not the other, this fails. (Value-level parity — e.g. rss_mb
-// live-vs-peak — is a separate known issue tracked in the design assessment.)
+// current-vs-peak — landed 2026-07-14; both SDKs now report CURRENT rss.)
 //
 // Runs entirely in bun: captures real Node emissions over an in-process broker
 // and parses Python's TypedDicts as text — no pytest / Python runtime needed.

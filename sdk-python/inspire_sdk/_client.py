@@ -4,7 +4,9 @@ Wire format per spec INSPIRE_ATRIUM_SPEC_ADDENDUM_2 §4.2 — bytes on the bus
 are identical to sdk-node so atrium cannot tell which language an app uses.
 
 What `Inspire.start()` does:
-  1. Connects to broker (defaults to 127.0.0.1:1883).
+  1. Connects to broker. Resolution (same chain as sdk-node, see _config.py):
+     explicit `broker=` arg > INSPIRE_BROKER_HOST/PORT env > BROKER_HOST/PORT
+     env > `.inspire/config.toml` [broker] (walk-up from cwd) > 127.0.0.1:1883.
   2. Sets LWT: empty retained payload on `inspire/presence/<slug>/<nodeId>`
      so atrium auto-cleans on crash (spec §4.1).
   3. Publishes retained PresenceMsg.
@@ -13,7 +15,8 @@ What `Inspire.start()` does:
 
 What `stop()` does:
   1. Stops the heartbeat thread.
-  2. Publishes empty retained payload on the presence topic (graceful clear).
+  2. Publishes empty retained payloads: manifest first, then presence
+     (same order as sdk-node — closes the dead-but-advertised window).
   3. Disconnects.
 
 The bootstrap surface (Stage 2 install agent, preflight, diagnostics) from the
@@ -33,6 +36,7 @@ from typing import Any, Callable, Optional
 
 import paho.mqtt.client as mqtt
 
+from ._config import load_inspire_config, resolve_broker
 from ._topics import (
     slugify_node_id,
     topic_cmd,
@@ -81,11 +85,22 @@ def _utc_now_iso() -> str:
     )
 
 
-def _process_rss_mb() -> int:
-    """Resident set size in MB. POSIX-only via resource.getrusage.
+def _process_rss_mb(proc_status_path: str = "/proc/self/status") -> int:
+    """CURRENT resident set size in MB — parity with sdk-node, which reports
+    `process.memoryUsage().rss` (current, not peak).
 
-    On Linux, ru_maxrss is in KB; spec §2 limits us to Linux so this is correct.
+    On Linux, read VmRSS from /proc/self/status (kB → MB). If /proc is
+    unavailable (non-Linux POSIX, sandboxes), fall back to getrusage
+    ru_maxrss — that value is PEAK rss, an acceptable degradation. The
+    `proc_status_path` parameter exists for tests only.
     """
+    try:
+        with open(proc_status_path, encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
     rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return rss_kb // 1024
 
@@ -374,7 +389,7 @@ class InspireClient:
             entry["event"].set()
 
     def stop(self) -> None:
-        """Tear down: clear retained presence + manifest, stop heartbeat, disconnect.
+        """Tear down: clear retained manifest then presence, stop heartbeat, disconnect.
 
         Idempotent — calling stop() twice does nothing the second time.
         """
@@ -391,16 +406,23 @@ class InspireClient:
         # and drops. LWT (set up at connect time) handles cleanup on the
         # broker's side when the connection drops.
         if self._client.is_connected():
+            # Clear the retained manifest FIRST, then presence — same order as
+            # sdk-node (src/index.ts). Order matters: the manifest advertises
+            # the app's API surface and presence is the liveness row. Retiring
+            # presence first leaves a window where the app reads "live" while
+            # still advertising verbs that are already gone — a caller could
+            # dispatch into a vanished target. Manifest-first closes that
+            # window. (LWT only covers presence, so the manifest clear is
+            # graceful-only.)
             info = self._client.publish(
-                topic_presence(self.slug, self.node_id),
+                topic_manifest(self.slug, self.node_id),
                 b"",
                 qos=1,
                 retain=True,
             )
             info.wait_for_publish(timeout=PUBLISH_ACK_TIMEOUT_S)
-            # Clear the retained manifest too (LWT only covers presence).
             info2 = self._client.publish(
-                topic_manifest(self.slug, self.node_id),
+                topic_presence(self.slug, self.node_id),
                 b"",
                 qos=1,
                 retain=True,
@@ -511,9 +533,16 @@ class Inspire:
         if not slug:
             raise ValueError("Inspire.start: slug is required")
         resolved_node_id = node_id or slugify_node_id(socket.gethostname())
-        broker = broker or {}
-        host = broker.get("host", DEFAULT_BROKER_HOST)
-        port = broker.get("port", DEFAULT_BROKER_PORT)
+        # Broker resolution — same precedence chain as sdk-node (src/config.ts):
+        # explicit broker= arg > INSPIRE_BROKER_* env > BROKER_* env >
+        # .inspire/config.toml (walk-up from cwd) > 127.0.0.1:1883.
+        resolved_broker = resolve_broker(
+            broker,
+            load_inspire_config(),
+            {"host": DEFAULT_BROKER_HOST, "port": DEFAULT_BROKER_PORT},
+        )
+        host = resolved_broker["host"]
+        port = resolved_broker["port"]
         resolved_client_id = (
             client_id or f"{slug}-{resolved_node_id}-{os.getpid()}"
         )
