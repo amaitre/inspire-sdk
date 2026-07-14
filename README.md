@@ -10,7 +10,9 @@
 # inspire-sdk (Node)
 
 The Node SDK for inspire-* apps to participate in the inspire-atrium MQTT bus.
-Wire format: `INSPIRE_ATRIUM_SPEC_ADDENDUM_2.md` §4.2.
+**Start with [`docs/BUS.md`](docs/BUS.md)** — the fleet-bus map (two buses, topology, onboarding, gotchas).
+Wire format: atrium `INSPIRE_ATRIUM_SPEC_ADDENDUM_2.md` §4.2 (envelope only — its topology section is superseded);
+RPC + capability manifests + federation: atrium `INSPIRE_ATRIUM_SPEC_ADDENDUM_3.md`.
 
 ## Install
 

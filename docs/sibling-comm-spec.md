@@ -163,6 +163,8 @@ Each RPC `type` is a flat dotted string. The body shape per type lives here.
 
 ## Broker config (as deployed on Mingus's host, 2026-05-05)
 
+> ⚠️ **STATUS UPDATE (2026-07-13).** The "planned" LAN listener is long since live — all three boxes' sibling clients connect directly to Ming's broker at `192.168.1.156:1883` via `~/.claude/PAI/USER/Config/sibling.yaml` (verified on Ming/Ata/Lyra). The SSH-tunnel fallback below is historical. Note this sibling bus is hub-and-spoke on Ming and is deliberately **separate** from the federated inspire-* app bus (per-host brokers bridged through Ata; Ming's bridge excludes `inspire/sibling/#`). Two-bus map: `docs/BUS.md`.
+
 - **Software:** mosquitto 2.0.18 (system service)
 - **Bind:** **127.0.0.1:1883** (loopback only) — needs a one-line conf addition to expose to the LAN
 - **Planned LAN listener:** `192.168.1.156:1883` (this host's `wlp0s20f3` IPv4)

@@ -1,7 +1,9 @@
 # inspire-sdk (Python)
 
 The Python SDK for inspire-* apps to participate in the inspire-atrium MQTT bus.
-Wire format: `docs/INSPIRE_ATRIUM_SPEC_ADDENDUM_2.md` §4.2.
+**Start with [`../docs/BUS.md`](../docs/BUS.md)** — the fleet-bus map (two buses, topology, onboarding, gotchas).
+Wire format: atrium repo `docs/INSPIRE_ATRIUM_SPEC_ADDENDUM_2.md` §4.2 (envelope only — its topology section is superseded);
+RPC + capability manifests: atrium `docs/INSPIRE_ATRIUM_SPEC_ADDENDUM_3.md`.
 
 This is the runtime presence/heartbeat surface — at parity with `sdk-node/`. The
 Phase 6 bootstrap surface (Stage 2 install agent, preflight, diagnostics) is
@@ -30,7 +32,13 @@ client.stop()  # on graceful shutdown
 ```
 
 `Inspire.start()` connects to `127.0.0.1:1883` by default. Override via
-`broker={"host": ..., "port": ...}` or read from your `.inspire/config.toml`.
+`broker={"host": ..., "port": ...}`.
+
+> ⚠️ **Divergence from Node (by current implementation, 2026-07-13):** unlike the
+> Node SDK, this package reads **neither** `INSPIRE_BROKER_HOST`/`INSPIRE_BROKER_PORT`
+> env vars **nor** `.inspire/config.toml` (`_client.py` — broker comes only from the
+> `broker=` argument or the localhost default). If your app should honor those, read
+> them yourself and pass `broker=`. Tracked as a parity decision, not a bug.
 
 ## What you get
 
@@ -41,7 +49,14 @@ client.stop()  # on graceful shutdown
 - `set_status(state, detail)` publishes retained `StatusMsg`.
 - `log(level, msg, fields=...)` for opt-in verbose logging.
 - `on_command(verb, handler)` for inbound atrium → app commands.
+- **RPC + capability manifest** (previously undocumented here): `on_call(verb, handler, spec=...)`
+  registers a callable verb and (re)publishes the retained `CapabilityManifestMsg` on
+  `inspire/manifest/<slug>/<nodeId>`; `call(slug, node_id, verb, args, timeout=8.0)`
+  invokes a remote verb with `corr_id` correlation. Contract: atrium Addendum 3 §2-3;
+  implementation `inspire_sdk/_client.py`.
 - `stop()` clears retained presence, stops the heartbeat, disconnects.
+  (Note: python clears presence→manifest, node clears manifest→presence — a brief
+  live-manifest window exists for stopping python apps; see `../docs/BUS.md` gotchas.)
 
 ## Mock app
 
