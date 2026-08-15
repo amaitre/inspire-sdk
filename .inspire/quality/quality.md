@@ -4,8 +4,8 @@ mode: execute
 generated_at: 2026-08-15
 score:
   measured:
-    test_count: 63
-    pass_count: 63
+    test_count: 33
+    pass_count: 33
     fail_count: 0
     coverage_lines_pct: null
     coverage_branches_pct: null
@@ -16,7 +16,7 @@ score:
 
 ## TL;DR
 
-**63/63 pass across both languages** (run 2026-08-15, Ming): Node **33/33** via `bun test test/` (6 files, 66 expects, ~1.3s, in-process aedes broker) + Python **30/30** via pytest (3 files, ~12.5s, against a real spawned Mosquitto). The Python run used the inspire-live-music venv for paho/pytest with `PYTHONPATH` pinning this repo's `sdk-python/` — import location verified (`inspire_sdk.__file__` → repo tree, not the venv's installed v0.2.0), so the numbers measure the working tree. Coverage is not wired in either language — pass/fail only. **Risk: low.**
+**Measured (gated command): 33/33 node.** Full picture — 63/63 across both languages (run 2026-08-15, Ming): Node **33/33** via `bun test test/` (6 files, 66 expects, ~1.3s, in-process aedes broker) + Python **30/30** via pytest (3 files, ~12.5s, against a real spawned Mosquitto). The Python run used the inspire-live-music venv for paho/pytest with `PYTHONPATH` pinning this repo's `sdk-python/` — import location verified (`inspire_sdk.__file__` → repo tree, not the venv's installed v0.2.0), so the numbers measure the working tree. Coverage is not wired in either language — pass/fail only. **Risk: low.**
 
 ## Inventory
 
